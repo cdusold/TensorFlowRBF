@@ -6,14 +6,40 @@
 using namespace tensorflow;
 
 REGISTER_OP("EuclideanDist")
-    .Input("data: double")
-    .Input("clusters: double")
-    .Output("distances: double");
+    .Input("data: T")
+    .Input("clusters: T")
+    .Output("distances: T")
+    .Attr("T: {half, float, double, int32, int64, complex64, complex128}")
+    .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
+
+      ::tensorflow::shape_inference::ShapeHandle a;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 2, &a));
+
+      ::tensorflow::shape_inference::ShapeHandle b;
+      TF_RETURN_IF_ERROR(c->WithRank(c->input(1), 2, &b));
+
+      ::tensorflow::shape_inference::DimensionHandle output_rows = c->Dim(a, 0);
+      ::tensorflow::shape_inference::DimensionHandle output_cols = c->Dim(b, 1);
+
+      // Validate that the inner shapes are compatible.
+      ::tensorflow::shape_inference::DimensionHandle inner_a = c->Dim(a, 1);
+      ::tensorflow::shape_inference::DimensionHandle inner_b = c->Dim(b, 0);
+      ::tensorflow::shape_inference::DimensionHandle merged;
+      TF_RETURN_IF_ERROR(c->Merge(inner_a, inner_b, &merged));
+
+      c->set_output(0, c->Matrix(output_rows, output_cols));
+      return Status::OK();
+    })
+    .Doc(R"doc(
+Computes the euclidean distance from every vector in "data" to every
+vector in "clusters". The inputs must be two-dimensional matrices and
+the inner dimension of "data" must match the inner dimension of "clusters".
+)doc");
 
 
 class EuclideanDistOp : public OpKernel {
  public:
-  explicit EuclideanDistOp(OpKernelConstruction* context) : OpKernel(context) {}
+  EuclideanDistOp(OpKernelConstruction* context) : OpKernel(context) {}
 
   void Compute(OpKernelContext* context) override {
     // Grab the input tensor
