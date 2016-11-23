@@ -113,8 +113,8 @@ REGISTER_OP("EuclideanDistGrad")
     .Input("clusters: T")
     .Input("distances: T")
     .Input("gradients: T")
-    .Output("xGrad: T")
-    .Output("cGrad: T")
+    .Output("xgrad: T")
+    .Output("cgrad: T")
     .Attr("T: {half, float, double, int32, int64, complex64, complex128}")
     .Doc(R"doc(
 Computes the gradient of the pairwise Euclidean distance calculation in
@@ -157,19 +157,20 @@ class EuclideanDistGradOp : public OpKernel {
     Tensor* output_tensor1 = NULL;
     Tensor* output_tensor2 = NULL;
 
-    TensorShape out_shape= TensorShape({r1,c2});
+    TensorShape out_shape1= TensorShape({r1,c1});
+    TensorShape out_shape2= TensorShape({r2,c2});
 
     //out_shape.add_dim(r1);
     //out_shape.add_dim(c2);
 
 
-    OP_REQUIRES_OK(context, context->allocate_output(0, out_shape,
+    OP_REQUIRES_OK(context, context->allocate_output(0, out_shape1,
                                                      &output_tensor1));
-    OP_REQUIRES_OK(context, context->allocate_output(1, out_shape,
+    OP_REQUIRES_OK(context, context->allocate_output(1, out_shape2,
                                                      &output_tensor2));
 
-    auto xGradients = output_tensor1->shaped<T, 2>({r1,c2});
-    auto cGradients = output_tensor2->shaped<T, 2>({r1,c2});
+    auto xGradients = output_tensor1->shaped<T, 2>({r1,c1});
+    auto cGradients = output_tensor2->shaped<T, 2>({r2,c2});
 
     // Set all but the first element of the output tensor to 0.
     //const int r1 = input1.size();
@@ -189,11 +190,11 @@ class EuclideanDistGradOp : public OpKernel {
     
     for(int n=0; n<r1; n++){
 	for (int k=0; k<c2; k++){
-	auto tempMultiplicand = gradients(n,k)/output(n,k);
+	    auto tempMultiplicand = gradients(n,k)/output(n,k);
 		for (int d=0; d<c1; d++){
 		    auto temp = (x(n,d)-c(d,k))*tempMultiplicand;
-			xGradients(n,k)+=temp;
-			cGradients(n,k)-=temp;
+			xGradients(n,d)+=temp;
+			cGradients(d,k)-=temp;
 		}
 	}
     }
