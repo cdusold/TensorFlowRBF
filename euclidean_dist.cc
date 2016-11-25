@@ -89,6 +89,13 @@ class EuclideanDistOp : public OpKernel {
     }
     */
 
+    // Zero out the vectors initially.
+    for (int k=0; k<c2; k++){
+        for(int n=0; n<r1; n++){
+            output(n,k) = 0;
+        }
+	}
+
     
     for(int n=0; n<r1; n++){
 	for (int k=0; k<c2; k++){
@@ -147,7 +154,7 @@ class EuclideanDistGradOp : public OpKernel {
     auto x = input_tensor1.shaped<T, 2>({input_tensor1.shape().dim_size(0),input_tensor1.shape().dim_size(1)});
     auto c = input_tensor2.shaped<T, 2>({input_tensor2.shape().dim_size(0),input_tensor2.shape().dim_size(1)});
     auto output = input_tensor3.shaped<T, 2>({input_tensor3.shape().dim_size(0),input_tensor3.shape().dim_size(1)});
-    auto gradients = input_tensor3.shaped<T, 2>({input_tensor4.shape().dim_size(0),input_tensor4.shape().dim_size(1)});
+    auto gradients = input_tensor4.shaped<T, 2>({input_tensor4.shape().dim_size(0),input_tensor4.shape().dim_size(1)});
 
 
     //printf("%d",input1(0,0));
@@ -187,15 +194,33 @@ class EuclideanDistGradOp : public OpKernel {
     }
     */
 
+    // Zero out the vectors initially.
+    for (int d=0; d<c1; d++){
+        for(int n=0; n<r1; n++){
+            xGradients(n,d) = 0;
+        }
+	    for (int k=0; k<c2; k++){
+	        cGradients(d,k) = 0;
+	    }
+	}
+	
+	//printf("%f\n",(double)gradients(0,0));
+	//printf("%f\n",(double)output(0,0));
     
     for(int n=0; n<r1; n++){
 	for (int k=0; k<c2; k++){
-	    auto tempMultiplicand = gradients(n,k)/output(n,k);
+	    // Points where x==c cannot be differentiated.
+	    //  Often those are points that don't want to be
+	    //  moved anyway, since that's typically the "best"
+	    //  cluster representative input.
+	    if (output(n,k)!=0){
+		auto tempMultiplicand = gradients(n,k)/output(n,k);
 		for (int d=0; d<c1; d++){
 		    auto temp = (x(n,d)-c(d,k))*tempMultiplicand;
 			xGradients(n,d)+=temp;
 			cGradients(d,k)-=temp;
 		}
+	    }
 	}
     }
 
