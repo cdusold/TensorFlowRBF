@@ -1,9 +1,45 @@
+#include "euclidean_dist.h"
+
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
-#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/register_types.h"
+// Not available for user made kernels
+//#include "tensorflow/core/kernels/fill_functor.h"
 #include <cmath>
 
-using namespace tensorflow;
+namespace tensorflow {
+
+template <typename T>
+struct LaunchEuclideanDistCPU {    
+  static void launch(
+      OpKernelContext* ctx, OpKernel* kernel, const Tensor& a, const Tensor& b,
+      Tensor* out) {
+      
+    const int r1 = a.dim_size(0);
+    const int c1 = a.dim_size(1);
+    const int c2 = b.dim_size(1);
+    
+    auto in1 = a.shaped<T, 2>({r1,c1});
+    auto in2 = b.shaped<T, 2>({c1,c2});
+    auto output = out->shaped<T, 2>({r1,c2});
+    
+    for(int n=0; n<r1; n++){
+      for (int k=0; k<c2; k++){
+        output(n,k) = 0;
+        for (int d=0; d<c1; d++){
+          output(n,k)+=pow(in1(n,d)-in2(d,k),2);
+        }
+        output(n,k)=sqrt(output(n,k));
+      }
+    }
+  }
+};
+
+template <typename T>
+struct LaunchEuclideanDist<CPUDevice, T> : public LaunchEuclideanDistCPU<T> {};
+
+template <typename T>
+struct LaunchEuclideanDist<GPUDevice, T> : public LaunchEuclideanDistGPU<T> {};
 
 REGISTER_OP("EuclideanDist")
     .Input("data: T")
@@ -36,81 +72,54 @@ vector in "clusters". The inputs must be two-dimensional matrices and
 the inner dimension of "data" must match the inner dimension of "clusters".
 )doc");
 
-template <typename T>
+template <typename Device, typename T>
 class EuclideanDistOp : public OpKernel {
  public:
   EuclideanDistOp(OpKernelConstruction* context) : OpKernel(context) {}
 
-  void Compute(OpKernelContext* context) override {
-    // Grab the input tensor
-    const Tensor& input_tensor1 = context->input(0);
-    const Tensor& input_tensor2 = context->input(1);
+  void Compute(OpKernelContext* ctx) override {
+    const Tensor& a = ctx->input(0);
+    const Tensor& b = ctx->input(1);
 
-    const int r1=input_tensor1.shape().dim_size(0); //num of data
-    const int c1=input_tensor1.shape().dim_size(1); //dimensions
+    // Check that the dimensions of the two matrices are valid.
+    OP_REQUIRES(ctx, TensorShapeUtils::IsMatrix(a.shape()),
+                errors::InvalidArgument("In[0] is not a matrix"));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsMatrix(b.shape()),
+                errors::InvalidArgument("In[1] is not a matrix"));
 
-    const int r2=input_tensor2.shape().dim_size(0); //dimensions
-    const int c2=input_tensor2.shape().dim_size(1); //clusters
+    OP_REQUIRES(ctx,
+                a.dim_size(1) == b.dim_size(0),
+                errors::InvalidArgument("Matrix size-incompatible: In[0]: ",
+                                        a.shape().DebugString(), ", In[1]: ",
+                                        b.shape().DebugString()));
+    TensorShape out_shape({a.dim_size(0), b.dim_size(1)});
+    Tensor* out = nullptr;
+    OP_REQUIRES_OK(ctx, ctx->allocate_output(0, out_shape, &out));
 
-
-    auto input1 = input_tensor1.shaped<T, 2>({input_tensor1.shape().dim_size(0),input_tensor1.shape().dim_size(1)});
-    auto input2 = input_tensor2.shaped<T, 2>({input_tensor2.shape().dim_size(0),input_tensor2.shape().dim_size(1)});
-
-
-    //printf("%d",input1(0,0));
-    //printf("%d",input2(0,0));
-
-    // Create an output tensor
-    Tensor* output_tensor = NULL;
-
-    TensorShape out_shape= TensorShape({r1,c2});
-
-    //out_shape.add_dim(r1);
-    //out_shape.add_dim(c2);
-
-
-    OP_REQUIRES_OK(context, context->allocate_output(0, out_shape,
-                                                     &output_tensor));
-
-    auto output = output_tensor->shaped<T, 2>({r1,c2});
-
-    // Set all but the first element of the output tensor to 0.
-    //const int r1 = input1.size();
-    //const int c1 = input1.size();
-
-    /* Standard Matrix Multiplication */
-    /*	
-    for (int i = 0; i < r1; i++) {
-	for (int j=0; j< c2; j++){
-		for (int k=0; k<c2; k++){			
-			output(i,j) += input1(i,k)*input2(k,j);
-		}
-	}
+    if (out->NumElements() == 0) {
+      // If a has shape [0, x] or b has shape [x, 0], the output shape
+      // is a 0-element matrix, so there is nothing to do.
+      return;
     }
-    */
-
-    // Zero out the vectors initially.
-    for (int k=0; k<c2; k++){
-        for(int n=0; n<r1; n++){
-            output(n,k) = 0;
-        }
-	}
-
+    if (a.NumElements() == 0 || b.NumElements() == 0) {
+      // If a has shape [x, 0] and b has shape [0, y], the
+      // output shape is [x, y] where x and y are non-zero, so we return
+      // the output with zeros.
     
-    for(int n=0; n<r1; n++){
-	for (int k=0; k<c2; k++){
-		for (int d=0; d<c1; d++){
-			output(n,k)+=pow((input1(n,d)-input2(d,k)),2);
-		}
-	}
+      auto output = out->shaped<T, 2>({a.shape().dim_size(0),b.shape().dim_size(1)});
+    
+      // Not available for user made kernels
+      //functor::SetZeroFunctor<Device, T> f;
+      //f(ctx->eigen_device<Device>(), out->flat<T>());
+      for (int k=0; k<b.dim_size(1); k++){
+        for(int n=0; n<a.dim_size(0); n++){
+          output(n,k) = 0;
+        }
+      }
+      return;
     }
 
-    for(int n=0; n<r1; n++){
-	for(int k=0; k<c2; k++){
-		output(n,k)=sqrt(output(n,k));
-	}
-    }
-
+    LaunchEuclideanDist<Device, T>::launch(ctx, this, a, b, out);
     
   }
 };
@@ -132,7 +141,7 @@ the outer dimensions of "data" and "clusters" must match the dimensions of
 both "distances" and "gradients".
 )doc");
 
-template <typename T>
+template <typename Device, typename T>
 class EuclideanDistGradOp : public OpKernel {
  public:
   EuclideanDistGradOp(OpKernelConstruction* context) : OpKernel(context) {}
@@ -178,62 +187,57 @@ class EuclideanDistGradOp : public OpKernel {
 
     auto xGradients = output_tensor1->shaped<T, 2>({r1,c1});
     auto cGradients = output_tensor2->shaped<T, 2>({r2,c2});
-
-    // Set all but the first element of the output tensor to 0.
-    //const int r1 = input1.size();
-    //const int c1 = input1.size();
-
-    /* Standard Matrix Multiplication */
-    /*	
-    for (int i = 0; i < r1; i++) {
-	for (int j=0; j< c2; j++){
-		for (int k=0; k<c2; k++){			
-			output(i,j) += input1(i,k)*input2(k,j);
-		}
-	}
-    }
-    */
-
-    // Zero out the vectors initially.
+    
+    // We will always want zero initially.
+    
+    // Not available for user made kernels
+    //functor::SetZeroFunctor<Device, T> f;
+    //f(ctx->eigen_device<Device>(), xGradients->flat<T>());
+    //f(ctx->eigen_device<Device>(), cGradients->flat<T>());
     for (int d=0; d<c1; d++){
-        for(int n=0; n<r1; n++){
-            xGradients(n,d) = 0;
-        }
-	    for (int k=0; k<c2; k++){
-	        cGradients(d,k) = 0;
-	    }
-	}
-	
-	//printf("%f\n",(double)gradients(0,0));
-	//printf("%f\n",(double)output(0,0));
+      for(int n=0; n<r1; n++){
+         xGradients(n,d) = 0;
+      }
+      for (int k=0; k<c2; k++){
+        cGradients(d,k) = 0;
+      }
+    }
+    
+    //printf("%f\n",(double)gradients(0,0));
+    //printf("%f\n",(double)output(0,0));
     
     for(int n=0; n<r1; n++){
-	for (int k=0; k<c2; k++){
-	    // Points where x==c cannot be differentiated.
-	    //  Often those are points that don't want to be
-	    //  moved anyway, since that's typically the "best"
-	    //  cluster representative input.
-	    if (output(n,k)!=0){
-		auto tempMultiplicand = gradients(n,k)/output(n,k);
-		for (int d=0; d<c1; d++){
-		    auto temp = (x(n,d)-c(d,k))*tempMultiplicand;
-			xGradients(n,d)+=temp;
-			cGradients(d,k)-=temp;
-		}
-	    }
-	}
+      for (int k=0; k<c2; k++){
+        // Points where x==c cannot be differentiated.
+        //  Often those are points that don't want to be
+        //  moved anyway, since that's typically the "best"
+        //  cluster representative input.
+        if (output(n,k)!=0){
+          auto tempMultiplicand = gradients(n,k)/output(n,k);
+          for (int d=0; d<c1; d++){
+            auto temp = (x(n,d)-c(d,k))*tempMultiplicand;
+            xGradients(n,d)+=temp;
+            cGradients(d,k)-=temp;
+          }
+        }
+      }
     }
 
     
   }
 };
 
-#define REGISTER_KERNEL(type)   \
-  REGISTER_KERNEL_BUILDER(      \
-    Name("EuclideanDist")       \
-    .Device(DEVICE_CPU)         \
-    .TypeConstraint<type>("T"), \
-    EuclideanDistOp<type>);
+#define REGISTER_KERNEL(type)          \
+  REGISTER_KERNEL_BUILDER(             \
+    Name("EuclideanDist")              \
+    .Device(DEVICE_CPU)                \
+    .TypeConstraint<type>("T"),        \
+    EuclideanDistOp<CPUDevice, type>); \
+  REGISTER_KERNEL_BUILDER(             \
+    Name("EuclideanDist")              \
+    .Device(DEVICE_GPU)                \
+    .TypeConstraint<type>("T"),        \
+    EuclideanDistOp<GPUDevice, type>);
 
 REGISTER_KERNEL(int32);
 REGISTER_KERNEL(float);
@@ -246,10 +250,12 @@ REGISTER_KERNEL(double);
     Name("EuclideanDistGrad")   \
     .Device(DEVICE_CPU)         \
     .TypeConstraint<type>("T"), \
-    EuclideanDistGradOp<type>);
+    EuclideanDistGradOp<CPUDevice, type>);
 
 REGISTER_KERNEL(int32);
 REGISTER_KERNEL(float);
 REGISTER_KERNEL(double);
 
 #undef REGISTER_KERNEL
+
+}  // namespace tensorflow
