@@ -16,6 +16,7 @@ template <typename T>
 __global__ void EuclideanDist(const T* in1, const T* in2, const int n, const int d, const int k, T* out) {
   for (int in = threadIdx.x; in < n; in += blockDim.x) {
     for (int ik = blockIdx.x; ik < k; ik += gridDim.x) {
+      out[in*k+ik] = 0;
       for (int id = 0; id < d; id ++) {
         T temp = in1[in*d+id] - in2[id*k+ik];
         out[in*k+ik] += temp*temp;
