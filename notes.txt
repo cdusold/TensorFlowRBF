@@ -1,0 +1,19 @@
+To compile:
+
+g++ -std=c++11 -shared euclidean_dist.cc -o euclidean_dist.so -I $TF_INC -fPIC -D_GLIBCXX_USE_CXX11_ABI=0
+
+
+To run and test:
+
+python
+
+import tensorflow as tf
+
+
+module= tf.load_op_library('euclidean_distmt.so')  # filename in quotes. 
+
+with tf.Session(''):
+	module.euclidean_dist_multi_thread(array1, array2).eval()
+
+
+
