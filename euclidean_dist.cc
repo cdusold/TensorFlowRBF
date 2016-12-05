@@ -59,7 +59,7 @@ struct LaunchEuclideanDistCPU {
     // Remember that the thread launching these threads is a usuable thread as well.
     threadcompute<T>(ctx, out, numThreads-1, numThreads);
     
-    for (int id=1; id<numThreads-1; id++){
+    for (int id=0; id<numThreads-1; id++){
       myThreads[id].join();
     }
   }
