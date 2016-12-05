@@ -23,13 +23,13 @@ static void threadcompute(OpKernelContext* context, Tensor* xoutput_tensor, Tens
   const int c2=input_tensor2.shape().dim_size(1); //clusters = k
 
 
-  auto in1 = input_tensor1.shaped<double, 2>({r1,c1});
-  auto in2 = input_tensor2.shaped<double, 2>({c1,c2});
-  auto in3 = input_tensor3.shaped<double, 2>({r1,c2});
-  auto in4 = input_tensor4.shaped<double, 2>({r1,c2});
+  auto in1 = input_tensor1.shaped<T, 2>({r1,c1});
+  auto in2 = input_tensor2.shaped<T, 2>({c1,c2});
+  auto in3 = input_tensor3.shaped<T, 2>({r1,c2});
+  auto in4 = input_tensor4.shaped<T, 2>({r1,c2});
   
-  auto xgrad = xoutput_tensor->shaped<double, 2>({r1,c1});
-  auto cgrad = coutput_tensor->shaped<double, 2>({c1,c2});
+  auto xgrad = xoutput_tensor->shaped<T, 2>({r1,c1});
+  auto cgrad = coutput_tensor->shaped<T, 2>({c1,c2});
 
   //printf("i: %d  r1: %d  numThreads: %d  \n",i,r1,numThreads);
   
