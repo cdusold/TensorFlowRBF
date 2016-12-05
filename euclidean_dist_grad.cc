@@ -6,46 +6,52 @@
 // Not available for user made kernels
 //#include "tensorflow/core/kernels/fill_functor.h"
 #include <cmath>
+#include <thread>
 
 namespace tensorflow {
 
 template <typename T>
-struct LaunchEuclideanDistGradCPU {
-  static void launch(
-      OpKernelContext* ctx, OpKernel* kernel, const Tensor& a, const Tensor& b,
-      const Tensor& d, const Tensor& g, Tensor* xout, Tensor* cout) {
-      
-    const int r1 = a.dim_size(0);
-    const int c1 = a.dim_size(1);
-    const int c2 = b.dim_size(1);
-    
-    auto in1 = a.shaped<T, 2>({r1,c1});
-    auto in2 = b.shaped<T, 2>({c1,c2});
-    auto in3 = d.shaped<T, 2>({r1,c2});
-    auto in4 = g.shaped<T, 2>({r1,c2});
-    auto xgrad = xout->shaped<T, 2>({r1,c1});
-    auto cgrad = cout->shaped<T, 2>({c1,c2});
-    
-    // We will always want zero initially.
-    
-    // Not available for user made kernels
-    //functor::SetZeroFunctor<Device, T> f;
-    //f(ctx->eigen_device<Device>(), xGradients->flat<T>());
-    //f(ctx->eigen_device<Device>(), cGradients->flat<T>());
+static void threadcompute(OpKernelContext* context, Tensor* xoutput_tensor, Tensor* coutput_tensor, int i, int numThreads){
+
+  const Tensor& input_tensor1 = context->input(0);
+  const Tensor& input_tensor2 = context->input(1);
+  const Tensor& input_tensor3 = context->input(2);
+  const Tensor& input_tensor4 = context->input(3);
+
+  const int r1=input_tensor1.shape().dim_size(0); //num of data = n
+  const int c1=input_tensor1.shape().dim_size(1); //dimensions = d
+  const int c2=input_tensor2.shape().dim_size(1); //clusters = k
+
+
+  auto in1 = input_tensor1.shaped<double, 2>({r1,c1});
+  auto in2 = input_tensor2.shaped<double, 2>({c1,c2});
+  auto in3 = input_tensor3.shaped<double, 2>({r1,c2});
+  auto in4 = input_tensor4.shaped<double, 2>({r1,c2});
+  
+  auto xgrad = xoutput_tensor->shaped<double, 2>({r1,c1});
+  auto cgrad = coutput_tensor->shaped<double, 2>({c1,c2});
+
+  //printf("i: %d  r1: %d  numThreads: %d  \n",i,r1,numThreads);
+  
+  for(int in=i*r1/float(numThreads); in<(i+1)*r1/float(numThreads); in++){
     for (int id=0; id<c1; id++){
-      for(int in=0; in<r1; in++){
-        xgrad(in,id) = 0;
-      }
-      for (int ik=0; ik<c2; ik++){
-        cgrad(id,ik) = 0;
-      }
+      xgrad(in,id) = 0;
     }
-    
-    //printf("%f\n",(double)gradients(0,0));
-    //printf("%f\n",(double)output(0,0));
-    
+  }
+  
+  for(int ik=i*c2/float(numThreads); ik<(i+1)*c2/float(numThreads); ik++){
+    for (int id=0; id<c1; id++){
+      cgrad(id,ik) = 0;
+    }
+  }
+  
+  //printf("%f\n",(double)gradients(0,0));
+  //printf("%f\n",(double)output(0,0));
+  
+  if (numThreads == 1) {
     for(int in=0; in<r1; in++){
       for (int ik=0; ik<c2; ik++){
+      
         // Points where x==c cannot be differentiated.
         //  Often those are points that don't want to be
         //  moved anyway, since that's typically the "best"
@@ -54,11 +60,59 @@ struct LaunchEuclideanDistGradCPU {
           auto tempMultiplicand = in4(in,ik)/in3(in,ik);
           for (int id=0; id<c1; id++){
             auto temp = (in1(in,id)-in2(id,ik))*tempMultiplicand;
-            xgrad(in,id)+=temp;
-            cgrad(id,ik)-=temp;
+            xgrad(in,id) += temp;
+            cgrad(id,ik) -= temp;
           }
         }
       }
+    }
+  } else { // In multithreading, the two gradients have to be computed apart.
+    for(int in=i*r1/float(numThreads); in<(i+1)*r1/float(numThreads); in++){
+      for (int ik=0; ik<c2; ik++){
+        if (in3(in,ik)!=0){
+          auto tempMultiplicand = in4(in,ik)/in3(in,ik);
+          for (int id=0; id<c1; id++){
+            xgrad(in,id) += (in1(in,id)-in2(id,ik))*tempMultiplicand;
+          }
+        }
+      }
+    }
+    for(int ik=i*c2/float(numThreads); ik<(i+1)*c2/float(numThreads); ik++){
+      for (int in=0; in<r1; in++){
+        if (in3(in,ik)!=0){
+          auto tempMultiplicand = in4(in,ik)/in3(in,ik);
+          for (int id=0; id<c1; id++){
+            cgrad(id,ik) -= (in1(in,id)-in2(id,ik))*tempMultiplicand;
+          }
+        }
+      }
+    }
+  }
+
+}
+
+template <typename Device, typename T>
+class EuclideanDistGradOp;
+
+template <typename T>
+struct LaunchEuclideanDistGradCPU {
+  static void launch(
+      OpKernelContext* ctx, OpKernel* kernel, const Tensor& a, const Tensor& b,
+      const Tensor& d, const Tensor& g, Tensor* xout, Tensor* cout) {
+    
+    int numThreads = (( EuclideanDistGradOp<CPUDevice, T>*) kernel)->get_number_of_threads();
+    
+    std::thread myThreads[numThreads-1];
+
+    for (int id=0;id<numThreads-1;id++){
+      myThreads[id]=std::thread(threadcompute<T>, ctx, xout, cout, id, numThreads);
+    }
+    
+    // Remember that the thread launching these threads is a usuable thread as well.
+    threadcompute<T>(ctx, xout, cout, numThreads-1, numThreads);
+    
+    for (int id=1; id<numThreads-1; id++){
+      myThreads[id].join();
     }
   }
 };
@@ -76,6 +130,7 @@ REGISTER_OP("EuclideanDistGrad")
     .Input("gradients: T")
     .Output("xgrad: T")
     .Output("cgrad: T")
+    .Attr("number_of_threads: int >= 1 = 1")
     .Attr("T: {half, float, double, int32, int64, complex64, complex128}")
     .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
 
@@ -122,7 +177,15 @@ both "distances" and "gradients".
 template <typename Device, typename T>
 class EuclideanDistGradOp : public OpKernel {
  public:
-  EuclideanDistGradOp(OpKernelConstruction* context) : OpKernel(context) {}
+  EuclideanDistGradOp(OpKernelConstruction* context) : OpKernel(context) {
+    // Get the number of the threads to use
+    OP_REQUIRES_OK(context,
+                   context->GetAttr("number_of_threads", &number_of_threads_));
+    // Check that number_of_threads is strictly positive
+    OP_REQUIRES(context, number_of_threads_ >= 1,
+                errors::InvalidArgument("Need number_of_threads >= 1, got ",
+                                        number_of_threads_));
+  }
 
   void Compute(OpKernelContext* ctx) override {
     const Tensor& a = ctx->input(0);
@@ -210,6 +273,12 @@ class EuclideanDistGradOp : public OpKernel {
     LaunchEuclideanDistGrad<Device, T>::launch(ctx, this, a, b, d, g, xout, cout);
     
   }
+  
+  int get_number_of_threads() {
+    return number_of_threads_;
+  }
+ private:
+  int number_of_threads_;
 };
 
 #define REGISTER_KERNEL(type)              \

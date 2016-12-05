@@ -6,31 +6,61 @@
 // Not available for user made kernels
 //#include "tensorflow/core/kernels/fill_functor.h"
 #include <cmath>
+#include <thread>
 
 namespace tensorflow {
 
 template <typename T>
-struct LaunchEuclideanDistCPU {    
+static void threadcompute(OpKernelContext* context, Tensor* output_tensor, int i, int numThreads){
+
+  const Tensor& input_tensor1 = context->input(0);
+  const Tensor& input_tensor2 = context->input(1);
+
+  const int r1=input_tensor1.shape().dim_size(0); //num of data
+  const int c1=input_tensor1.shape().dim_size(1); //dimensions
+  const int c2=input_tensor2.shape().dim_size(1); //clusters
+
+  auto in1 = input_tensor1.shaped<T, 2>({r1,c1});
+  auto in2 = input_tensor2.shaped<T, 2>({c1,c2});
+  
+  auto output = output_tensor->shaped<T, 2>({r1,c2});
+
+  //printf("i: %d  r1: %d  numThreads: %d  \n",i,r1,numThreads);
+  
+  for(int n=i*r1/float(numThreads); n<(i+1)*r1/float(numThreads); n++){
+    for (int k=0; k<c2; k++){
+      output(n,k) = 0;
+      for (int d=0; d<c1; d++){
+        output(n,k)+=pow(in1(n,d)-in2(d,k),2);
+      }
+      output(n,k)=sqrt(output(n,k));
+    }
+  }
+
+}
+
+template <typename Device, typename T>
+class EuclideanDistOp;
+
+template <typename T>
+struct LaunchEuclideanDistCPU {
   static void launch(
       OpKernelContext* ctx, OpKernel* kernel, const Tensor& a, const Tensor& b,
       Tensor* out) {
-      
-    const int r1 = a.dim_size(0);
-    const int c1 = a.dim_size(1);
-    const int c2 = b.dim_size(1);
     
-    auto in1 = a.shaped<T, 2>({r1,c1});
-    auto in2 = b.shaped<T, 2>({c1,c2});
-    auto output = out->shaped<T, 2>({r1,c2});
+    int numThreads = ((EuclideanDistOp<CPUDevice, T>*) kernel)->get_number_of_threads();
     
-    for(int n=0; n<r1; n++){
-      for (int k=0; k<c2; k++){
-        output(n,k) = 0;
-        for (int d=0; d<c1; d++){
-          output(n,k)+=pow(in1(n,d)-in2(d,k),2);
-        }
-        output(n,k)=sqrt(output(n,k));
-      }
+    std::thread myThreads[numThreads-1];
+
+    for (int id=0;id<numThreads-1;id++){
+      myThreads[id]=std::thread(threadcompute<T>, ctx, out, id, numThreads);
+    }
+    
+    // Remember that the thread launching these threads is a usuable thread as well.
+    threadcompute<T>(ctx, out, numThreads-1, numThreads);
+    
+    for (int id=1; id<numThreads-1; id++){
+      myThreads[id].join();
     }
   }
 };
@@ -45,6 +75,7 @@ REGISTER_OP("EuclideanDist")
     .Input("data: T")
     .Input("clusters: T")
     .Output("distances: T")
+    .Attr("number_of_threads: int >= 1 = 1")
     .Attr("T: {half, float, double, int32, int64, complex64, complex128}")
     .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
 
@@ -75,7 +106,15 @@ the inner dimension of "data" must match the inner dimension of "clusters".
 template <typename Device, typename T>
 class EuclideanDistOp : public OpKernel {
  public:
-  EuclideanDistOp(OpKernelConstruction* context) : OpKernel(context) {}
+  EuclideanDistOp(OpKernelConstruction* context) : OpKernel(context) {
+    // Get the number of the threads to use
+    OP_REQUIRES_OK(context,
+                   context->GetAttr("number_of_threads", &number_of_threads_));
+    // Check that number_of_threads is strictly positive
+    OP_REQUIRES(context, number_of_threads_ >= 1,
+                errors::InvalidArgument("Need number_of_threads >= 1, got ",
+                                        number_of_threads_));
+  }
 
   void Compute(OpKernelContext* ctx) override {
     const Tensor& a = ctx->input(0);
@@ -122,6 +161,12 @@ class EuclideanDistOp : public OpKernel {
     LaunchEuclideanDist<Device, T>::launch(ctx, this, a, b, out);
     
   }
+  
+  int get_number_of_threads() {
+    return number_of_threads_;
+  }
+ private:
+  int number_of_threads_;
 };
 
 #define REGISTER_KERNEL(type)          \
