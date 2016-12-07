@@ -2,6 +2,8 @@
 This repository explores the design of a Radial Basis Function and related functions (like K-Means) for use with TensorFlow.
 
 # To compile
+Note: You must have a GPU compatible TensorFlow installed on your system before compiling this project.
+
 Run the following in a terminal from the folder you checked out into: (use python2 instead of python3 for if you are using Python 2 for some reason.)
 
     TF_INC=$(python3 -c 'import tensorflow as tf; print(tf.sysconfig.get_include())')
@@ -25,3 +27,8 @@ From python running in the same folder as you checked out run the following code
         y = op.outputs[0]  # y = 0.5 * b / conj(a)
         xGrad, cGrad = euclidean_dist_grad(a,b,y,grad)
         return xGrad, cGrad
+
+# To run the example code which generated our plots for the paper
+Open a terminal, and run `python3 TestCPUImplementation.py`
+Then run, `python3 TestGPUImplementation.py`
+And finally run `python3 PlotTestData.py`
